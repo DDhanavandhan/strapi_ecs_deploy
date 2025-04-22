@@ -1,0 +1,35 @@
+{
+    "kind": "collectionType",
+    "collectionName": "flims",
+    "info": {
+        "singularName": "flim",
+        "pluralName": "flims",
+        "displayName": "flim"
+    },
+    "options": {
+        "draftAndPublish": true
+    },
+    "attributes": {
+        "title": {
+            "type": "string"
+        },
+        "released": {
+            "type": "date"
+        },
+        "director": {
+            "type": "string"
+        },
+        "plot": {
+            "type": "text"
+        },
+        "slug": {
+            "type": "string"
+        },
+        "reviews": {
+            "type": "relation",
+            "relation": "oneToMany",
+            "target": "api::review.review",
+            "mappedBy": "Flim"
+        }
+    }
+}

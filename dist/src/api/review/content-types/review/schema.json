@@ -1,0 +1,26 @@
+{
+    "kind": "collectionType",
+    "collectionName": "reviews",
+    "info": {
+        "singularName": "review",
+        "pluralName": "reviews",
+        "displayName": "review"
+    },
+    "options": {
+        "draftAndPublish": true
+    },
+    "attributes": {
+        "Flim": {
+            "type": "relation",
+            "relation": "manyToOne",
+            "target": "api::flim.flim",
+            "inversedBy": "reviews"
+        },
+        "review": {
+            "type": "text"
+        },
+        "reviewer": {
+            "type": "string"
+        }
+    }
+}
