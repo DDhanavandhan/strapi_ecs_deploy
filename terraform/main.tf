@@ -222,6 +222,8 @@ resource "aws_ecs_task_definition" "strapi_task_with_logging" {
       }
     }
   ])
+
+  depends_on = [aws_cloudwatch_log_group.strapi_log_group]
 }
 
 # CloudWatch Metrics Collection (Optional, for ECS)
