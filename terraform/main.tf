@@ -2,7 +2,6 @@ provider "aws" {
   region = "us-east-1"
 }
 
-# Default VPC and subnets
 data "aws_vpc" "default" {
   default = true
 }
@@ -14,7 +13,7 @@ data "aws_subnets" "default" {
   }
 }
 
-# Security Group for ECS (allow traffic on 1337)
+# Security Groups
 resource "aws_security_group" "ecs_sg" {
   name        = "strapi-ecs-sg"
   description = "Allow traffic for ECS containers"
@@ -35,7 +34,6 @@ resource "aws_security_group" "ecs_sg" {
   }
 }
 
-# Security Group for ALB
 resource "aws_security_group" "alb_sg" {
   name        = "strapi-alb-sg"
   description = "Allow HTTP traffic to ALB"
@@ -63,7 +61,7 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# Application Load Balancer
+# ALB & Target Group
 resource "aws_lb" "alb" {
   name               = "strapi-alb"
   internal           = false
@@ -72,7 +70,6 @@ resource "aws_lb" "alb" {
   subnets            = data.aws_subnets.default.ids
 }
 
-# Target Group for ECS service (port 1337)
 resource "aws_lb_target_group" "strapi_tg" {
   name        = "strapi-tg"
   port        = 1337
@@ -81,7 +78,6 @@ resource "aws_lb_target_group" "strapi_tg" {
   target_type = "ip"
 }
 
-# ALB Listener (port 80 → 1337)
 resource "aws_lb_listener" "alb_listener_80" {
   load_balancer_arn = aws_lb.alb.arn
   port              = 80
@@ -93,7 +89,6 @@ resource "aws_lb_listener" "alb_listener_80" {
   }
 }
 
-# ALB Listener (port 1337 → 1337)
 resource "aws_lb_listener" "alb_listener_1337" {
   load_balancer_arn = aws_lb.alb.arn
   port              = 1337
@@ -110,7 +105,7 @@ resource "aws_ecs_cluster" "strapi_cluster" {
   name = "strapi-cluster"
 }
 
-# IAM Role for ECS Task Execution
+# IAM Role for ECS
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "ecsTaskExecutionRole"
 
@@ -131,7 +126,13 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# ECS Task Definition (using ECR image passed as variable)
+# 🔥 CloudWatch Log Group
+resource "aws_cloudwatch_log_group" "strapi_logs" {
+  name              = "/ecs/strapi"
+  retention_in_days = 7
+}
+
+# ECS Task Definition with Logging
 resource "aws_ecs_task_definition" "strapi_task" {
   family                   = "strapi-task"
   network_mode             = "awsvpc"
@@ -147,14 +148,21 @@ resource "aws_ecs_task_definition" "strapi_task" {
       essential = true
       portMappings = [{
         containerPort = 1337
-        hostPort      = 1337
         protocol      = "tcp"
-      }]
+      }],
+      logConfiguration = {
+        logDriver = "awslogs",
+        options = {
+          awslogs-group         = "/ecs/strapi",
+          awslogs-region        = "us-east-1",
+          awslogs-stream-prefix = "ecs"
+        }
+      }
     }
   ])
 }
 
-# ECS Service with Load Balancer
+# ECS Service
 resource "aws_ecs_service" "strapi_service" {
   name            = "strapi-service"
   cluster         = aws_ecs_cluster.strapi_cluster.id
@@ -175,4 +183,31 @@ resource "aws_ecs_service" "strapi_service" {
   }
 
   depends_on = [aws_lb_listener.alb_listener_80, aws_lb_listener.alb_listener_1337]
+}
+
+# 📊 Optional Dashboard
+resource "aws_cloudwatch_dashboard" "ecs_dashboard" {
+  dashboard_name = "Strapi-ECS-Dashboard"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type = "metric",
+        x    = 0,
+        y    = 0,
+        width = 12,
+        height = 6,
+        properties = {
+          metrics = [
+            [ "AWS/ECS", "CPUUtilization", "ServiceName", aws_ecs_service.strapi_service.name, "ClusterName", aws_ecs_cluster.strapi_cluster.name ],
+            [ ".", "MemoryUtilization", ".", ".", ".", "." ]
+          ],
+          view = "timeSeries",
+          stacked = false,
+          region = "us-east-1",
+          title  = "ECS CPU & Memory Utilization"
+        }
+      }
+    ]
+  })
 }
