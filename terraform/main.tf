@@ -83,7 +83,7 @@ resource "aws_lb_target_group" "strapi_tg" {
   health_check {
     path                = "/"
     protocol            = "HTTP"
-    matcher             = "200-399"  # Accept 200-399 status codes
+    matcher             = "200-399"
     interval            = 30
     timeout             = 5
     healthy_threshold   = 2
@@ -91,7 +91,7 @@ resource "aws_lb_target_group" "strapi_tg" {
   }
 }
 
-# ALB Listener (port 80 → 1337)
+# ALB Listeners
 resource "aws_lb_listener" "alb_listener_80" {
   load_balancer_arn = aws_lb.alb.arn
   port              = 80
@@ -103,7 +103,6 @@ resource "aws_lb_listener" "alb_listener_80" {
   }
 }
 
-# ALB Listener (port 1337 → 1337)
 resource "aws_lb_listener" "alb_listener_1337" {
   load_balancer_arn = aws_lb.alb.arn
   port              = 1337
@@ -141,60 +140,14 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# ECS Task Definition (using ECR image passed as variable)
-resource "aws_ecs_task_definition" "strapi_task" {
-  family                   = "strapi-task"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = "512"
-  memory                   = "1024"
-  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
-
-  container_definitions = jsonencode([
-    {
-      name      = "strapi"
-      image     = var.ecr_image
-      essential = true
-      portMappings = [{
-        containerPort = 1337
-        hostPort      = 1337
-        protocol      = "tcp"
-      }]
-    }
-  ])
-}
-
-# ECS Service with Load Balancer
-resource "aws_ecs_service" "strapi_service" {
-  name            = "strapi-service"
-  cluster         = aws_ecs_cluster.strapi_cluster.id
-  task_definition = aws_ecs_task_definition.strapi_task.arn
-  launch_type     = "FARGATE"
-  desired_count   = 1
-
-  network_configuration {
-    subnets         = data.aws_subnets.default.ids
-    security_groups = [aws_security_group.ecs_sg.id]
-    assign_public_ip = true
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.strapi_tg.arn
-    container_name   = "strapi"
-    container_port   = 1337
-  }
-
-  depends_on = [aws_lb_listener.alb_listener_80, aws_lb_listener.alb_listener_1337]
-}
-
-# CloudWatch Log Group for ECS
+# CloudWatch Log Group
 resource "aws_cloudwatch_log_group" "strapi_log_group" {
   name              = "/ecs/strapi"
   retention_in_days = 7
 }
 
-# ECS Task Definition with Log Configuration
-resource "aws_ecs_task_definition" "strapi_task_with_logging" {
+# ECS Task Definition (WITH LOGGING)
+resource "aws_ecs_task_definition" "strapi_task" {
   family                   = "strapi-task"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
@@ -226,17 +179,48 @@ resource "aws_ecs_task_definition" "strapi_task_with_logging" {
   depends_on = [aws_cloudwatch_log_group.strapi_log_group]
 }
 
-# CloudWatch Metrics Collection (Optional, for ECS)
+# ECS Service (using FARGATE SPOT!)
+resource "aws_ecs_service" "strapi_service" {
+  name            = "strapi-service"
+  cluster         = aws_ecs_cluster.strapi_cluster.id
+  task_definition = aws_ecs_task_definition.strapi_task.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 1
+  }
+
+  network_configuration {
+    subnets          = data.aws_subnets.default.ids
+    security_groups  = [aws_security_group.ecs_sg.id]
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.strapi_tg.arn
+    container_name   = "strapi"
+    container_port   = 1337
+  }
+
+  depends_on = [
+    aws_lb_listener.alb_listener_80,
+    aws_lb_listener.alb_listener_1337
+  ]
+}
+
+# CloudWatch Alarms
 resource "aws_cloudwatch_metric_alarm" "cpu_utilization" {
-  alarm_name                = "High-CPU-Utilization"
-  comparison_operator       = "GreaterThanThreshold"
-  evaluation_periods        = 1
-  metric_name               = "CPUUtilization"
-  namespace                 = "AWS/ECS"
-  period                    = 300
-  statistic                 = "Average"
-  threshold                 = 80
-  alarm_description         = "Alarm when CPU exceeds 80%"
+  alarm_name          = "High-CPU-Utilization"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/ECS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 80
+  alarm_description   = "Alarm when CPU exceeds 80%"
   dimensions = {
     ClusterName = aws_ecs_cluster.strapi_cluster.name
     ServiceName = aws_ecs_service.strapi_service.name
@@ -244,20 +228,21 @@ resource "aws_cloudwatch_metric_alarm" "cpu_utilization" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "memory_utilization" {
-  alarm_name                = "High-Memory-Utilization"
-  comparison_operator       = "GreaterThanThreshold"
-  evaluation_periods        = 1
-  metric_name               = "MemoryUtilization"
-  namespace                 = "AWS/ECS"
-  period                    = 300
-  statistic                 = "Average"
-  threshold                 = 80
-  alarm_description         = "Alarm when memory exceeds 80%"
+  alarm_name          = "High-Memory-Utilization"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "MemoryUtilization"
+  namespace           = "AWS/ECS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 80
+  alarm_description   = "Alarm when memory exceeds 80%"
   dimensions = {
     ClusterName = aws_ecs_cluster.strapi_cluster.name
     ServiceName = aws_ecs_service.strapi_service.name
   }
 }
+
 resource "aws_cloudwatch_metric_alarm" "ecs_network_in" {
   alarm_name          = "strapi-network-in"
   comparison_operator = "GreaterThanThreshold"
