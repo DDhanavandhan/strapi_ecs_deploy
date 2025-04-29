@@ -2,11 +2,11 @@ name: CD - Deploy Strapi to ECS
 
 on:
   workflow_dispatch:
-    inputs:
-      ecr_image:
-        description: 'Full ECR image URL (e.g., 123456789012.dkr.ecr.us-east-1.amazonaws.com/strapi-app:latest)'
-        required: true
 
+permissions:
+  contents: read
+  id-token: write
+  
 env:
   AWS_REGION: us-east-1
 
@@ -35,7 +35,15 @@ jobs:
       run: terraform init
       working-directory: ./terraform  # Change if needed
 
-    - name: Terraform Apply
+    - name: Terraform fmt
+      run: terraform fmt -check
+      working-directory: ./terraform  # Change if needed
+
+    - name: Terraform plan
+      run: terraform plan -input=false
+      working-directory: ./terraform  # Change if needed
+
+    - name: Terraform destroy
       run: |
-        terraform apply -auto-approve -var="ecr_image=${{ github.event.inputs.ecr_image }}"
+        terraform destroy -auto-approve -var="ecr_image=${{ github.event.inputs.ecr_image }}"
       working-directory: ./terraform  # Change if needed
