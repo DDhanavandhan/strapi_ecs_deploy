@@ -1,51 +1,55 @@
-name: CD - Deploy to ECS with CodeDeploy
+name: CD Workflow for ECS Deployment
 
 on:
-  workflow_dispatch:
-
-env:
-  AWS_REGION: us-east-1
-  ECR_REPO: strapi-app
-  SERVICE_NAME: strapi-service
-  CLUSTER_NAME: strapi-cluster
-  CODEDEPLOY_APP: strapi-codedeploy-app
-  DEPLOYMENT_GROUP: strapi-deployment-group
+  push:
+    branches:
+      - main
 
 jobs:
   deploy:
-    name: Deploy to ECS Fargate
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v2
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+      # Set up AWS CLI
+      - name: Set up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v1
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: us-east-1
 
-      - name: Get latest task definition
-        id: taskdef
+      # Build Docker image and push to ECR
+      - name: Build and push Docker image
         run: |
-          TASK_DEF_ARN=$(aws ecs describe-task-definition \
-            --task-definition strapi-task \
-            --query "taskDefinition.taskDefinitionArn" \
-            --output text)
-          echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+          docker build -t strapi-app .
+          docker tag strapi-app:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/strapi-app:latest
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/strapi-app:latest
 
-      - name: Replace task ARN in appspec.json
+      # Register ECS task definition
+      - name: Register ECS task definition
         run: |
-          sed -i "s|REPLACEME_TASK_DEFINITION_ARN|${{ env.TASK_DEF_ARN }}|g" appspec.json
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --family strapi-task \
+            --execution-role-arn arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/ecsTaskExecutionRole \
+            --network-mode awsvpc \
+            --requires-compatibilities FARGATE \
+            --cpu "512" \
+            --memory "1024" \
+            --container-definitions "[{\"name\":\"strapi\",\"image\":\"${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/strapi-app:latest\",\"essential\":true,\"portMappings\":[{\"containerPort\":1337,\"hostPort\":1337,\"protocol\":\"tcp\"}]}]" \
+            --region us-east-1)
 
-      - name: Trigger CodeDeploy Deployment
+      # Deploy to ECS using CodeDeploy
+      - name: Create deployment using CodeDeploy
         run: |
-          aws deploy create-deployment \
-            --application-name $CODEDEPLOY_APP \
-            --deployment-group-name $DEPLOYMENT_GROUP \
-            --deployment-config-name CodeDeployDefault.ECSAllAtOnce \
-            --region $AWS_REGION \
-            --description "Strapi Blue/Green Deployment" \
-            --revision file://appspec.json
+          DEPLOYMENT_ID=$(aws deploy create-deployment \
+            --application-name strapi-application \
+            --deployment-group-name strapi-deployment-group \
+            --revision revisionType=GitHub,gitHubLocation={repository=DDhanavandhan/strapi_ecs_deploy,commitId=${{ github.sha }}} \
+            --region us-east-1)
+
+          echo "Deployment ID: $DEPLOYMENT_ID"
