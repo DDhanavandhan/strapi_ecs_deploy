@@ -32,11 +32,19 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Fetch current task definition
+      - name: Fetch and sanitize current task definition
         id: get-task-def
         run: |
           aws ecs describe-task-definition --task-definition $TASK_FAMILY \
-          | jq '.taskDefinition' > task-def.json
+          | jq '{
+              family,
+              executionRoleArn,
+              networkMode,
+              containerDefinitions,
+              requiresCompatibilities,
+              cpu,
+              memory
+            }' > task-def.json
 
       - name: Update image in task definition
         id: task-def
