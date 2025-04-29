@@ -25,7 +25,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Set up AWS credentials
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -35,19 +35,18 @@ jobs:
       - name: Fetch and sanitize current task definition
         id: get-task-def
         run: |
-          aws ecs describe-task-definition --task-definition $TASK_FAMILY \
-          | jq '{
-              family,
-              executionRoleArn,
-              networkMode,
-              containerDefinitions,
-              requiresCompatibilities,
-              cpu,
-              memory
-            }' > task-def.json
+          aws ecs describe-task-definition --task-definition $TASK_FAMILY | jq '{
+            family: .taskDefinition.family,
+            executionRoleArn: .taskDefinition.executionRoleArn,
+            networkMode: .taskDefinition.networkMode,
+            containerDefinitions: .taskDefinition.containerDefinitions,
+            requiresCompatibilities: .taskDefinition.requiresCompatibilities,
+            cpu: .taskDefinition.cpu,
+            memory: .taskDefinition.memory
+          }' > task-def.json
 
       - name: Update image in task definition
-        id: task-def
+        id: update-task
         run: |
           IMAGE="${{ github.event.inputs.ecr_image_url }}"
           jq --arg IMAGE "$IMAGE" '.containerDefinitions[0].image = $IMAGE' task-def.json > new-task-def.json
@@ -68,5 +67,5 @@ jobs:
             --deployment-group-name $DEPLOYMENT_GROUP \
             --deployment-config-name CodeDeployDefault.ECSAllAtOnce \
             --description "Strapi Blue/Green Deployment" \
-            --target-objects "taskDefinition=$TASK_DEF_ARN" \
+            --target-objects "taskDefinition=${{ env.TASK_DEF_ARN }}" \
             --file-exists-behavior OVERWRITE
