@@ -1,28 +1,23 @@
-name: CD - Blue/Green Deploy via CodeDeploy
+name: CD - Deploy to ECS with CodeDeploy
 
 on:
   workflow_dispatch:
-    inputs:
-      ecr_image_url:
-        description: 'Full ECR image URL (e.g. 626635402783.dkr.ecr.us-east-1.amazonaws.com/strapi-app:latest)'
-        required: true
-        type: string
 
 env:
   AWS_REGION: us-east-1
-  CLUSTER_NAME: strapi-cluster
+  ECR_REPO: strapi-app
   SERVICE_NAME: strapi-service
-  TASK_FAMILY: strapi-task
-  DEPLOYMENT_GROUP: strapi-deploy-group
+  CLUSTER_NAME: strapi-cluster
   CODEDEPLOY_APP: strapi-codedeploy-app
+  DEPLOYMENT_GROUP: strapi-deployment-group
 
 jobs:
   deploy:
-    name: Register Task Definition & Trigger CodeDeploy
+    name: Deploy to ECS Fargate
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Configure AWS credentials
@@ -32,36 +27,18 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Get current task definition and clean it
+      - name: Get latest task definition
+        id: taskdef
         run: |
-          aws ecs describe-task-definition \
-            --task-definition $TASK_FAMILY \
-            --region $AWS_REGION \
-            --query "taskDefinition" \
-            > task-def-raw.json
-
-          NEW_IMAGE="${{ github.event.inputs.ecr_image_url }}"
-
-          cat task-def-raw.json | jq --arg IMAGE "$NEW_IMAGE" '{
-            family: .family,
-            executionRoleArn: .executionRoleArn,
-            networkMode: .networkMode,
-            containerDefinitions: [.containerDefinitions[0] | .image = $IMAGE],
-            requiresCompatibilities: .requiresCompatibilities,
-            cpu: .cpu,
-            memory: .memory
-          }' > new-task-def.json
-
-      - name: Register new task definition
-        id: register-task
-        run: |
-          TASK_DEF_ARN=$(aws ecs register-task-definition \
-            --cli-input-json file://new-task-def.json \
-            --region $AWS_REGION \
-            --query 'taskDefinition.taskDefinitionArn' \
+          TASK_DEF_ARN=$(aws ecs describe-task-definition \
+            --task-definition strapi-task \
+            --query "taskDefinition.taskDefinitionArn" \
             --output text)
           echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
-          echo "::set-output name=task_def_arn::$TASK_DEF_ARN"
+
+      - name: Replace task ARN in appspec.json
+        run: |
+          sed -i "s|REPLACEME_TASK_DEFINITION_ARN|${{ env.TASK_DEF_ARN }}|g" appspec.json
 
       - name: Trigger CodeDeploy Deployment
         run: |
@@ -71,5 +48,4 @@ jobs:
             --deployment-config-name CodeDeployDefault.ECSAllAtOnce \
             --region $AWS_REGION \
             --description "Strapi Blue/Green Deployment" \
-            --target-objects "taskDefinition=${{ env.TASK_DEF_ARN }}" \
-            --file-exists-behavior OVERWRITE
+            --revision file://appspec.json
