@@ -1,4 +1,4 @@
-name: CD - Deploy Strapi to ECS
+name: CD - Destroy terrafom
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
   id-token: write
-  
+
 env:
   AWS_REGION: us-east-1
 
