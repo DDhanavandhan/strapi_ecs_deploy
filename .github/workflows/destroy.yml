@@ -2,6 +2,11 @@ name: CD - Destroy terrafom
 
 on:
   workflow_dispatch:
+   inputs:
+    ecr_image:
+      description: 'ECR Image to destroy'
+      required: true
+      default: 'your-ecr-image'  # Change this to your default value
 
 permissions:
   contents: read
