@@ -10,12 +10,6 @@ variable "ecr_image" {
 variable "app_port" {
   default = 1337
 }
-
-variable "ecr_image" {
-  description = "ECR Image URL"
-  type        = string
-}
-
 variable "domain_name" {
   default = "nsmstore.site"
 }
