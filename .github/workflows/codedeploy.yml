@@ -1,9 +1,7 @@
 name: CD Workflow for ECS Deployment
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -43,13 +41,13 @@ jobs:
             --container-definitions "[{\"name\":\"strapi\",\"image\":\"${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/strapi-app:latest\",\"essential\":true,\"portMappings\":[{\"containerPort\":1337,\"hostPort\":1337,\"protocol\":\"tcp\"}]}]" \
             --region us-east-1)
 
-      # Deploy to ECS using CodeDeploy
-      - name: Create deployment using CodeDeploy
-        run: |
-          DEPLOYMENT_ID=$(aws deploy create-deployment \
-            --application-name strapi-application \
-            --deployment-group-name strapi-deployment-group \
-            --revision revisionType=GitHub,gitHubLocation={repository=DDhanavandhan/strapi_ecs_deploy,commitId=${{ github.sha }}} \
-            --region us-east-1)
+            - name: Create deployment using CodeDeploy
+            run: |
+              aws deploy create-deployment \
+                --application-name strapi-application \
+                --deployment-group-name strapi-deployment-group \
+                --revision '{"revisionType":"GitHub","gitHubLocation":{"repository":"DDhanavandhan/strapi_ecs_deploy","commitId":"${{ github.sha }}"}}' \
+                --region us-east-1
+          
 
           echo "Deployment ID: $DEPLOYMENT_ID"
