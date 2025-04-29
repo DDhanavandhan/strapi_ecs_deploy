@@ -23,7 +23,7 @@ jobs:
           aws deploy create-deployment \
             --application-name strapi-application \
             --deployment-group-name strapi-deployment-group \
-            --revision file://deploy-revision.json \
+            --revision file://appspec.json \
             --region us-east-1
 
       - name: Generate deploy-revision.json
