@@ -32,33 +32,36 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Fetch and sanitize current task definition
-        id: get-task-def
+      - name: Get current task definition and clean it
         run: |
-          aws ecs describe-task-definition --task-definition $TASK_FAMILY | jq '{
-            family: .taskDefinition.family,
-            executionRoleArn: .taskDefinition.executionRoleArn,
-            networkMode: .taskDefinition.networkMode,
-            containerDefinitions: .taskDefinition.containerDefinitions,
-            requiresCompatibilities: .taskDefinition.requiresCompatibilities,
-            cpu: .taskDefinition.cpu,
-            memory: .taskDefinition.memory
-          }' > task-def.json
+          aws ecs describe-task-definition \
+            --task-definition $TASK_FAMILY \
+            --region $AWS_REGION \
+            --query "taskDefinition" \
+            > task-def-raw.json
 
-      - name: Update image in task definition
-        id: update-task
-        run: |
-          IMAGE="${{ github.event.inputs.ecr_image_url }}"
-          jq --arg IMAGE "$IMAGE" '.containerDefinitions[0].image = $IMAGE' task-def.json > new-task-def.json
+          NEW_IMAGE="${{ github.event.inputs.ecr_image_url }}"
+
+          cat task-def-raw.json | jq --arg IMAGE "$NEW_IMAGE" '{
+            family: .family,
+            executionRoleArn: .executionRoleArn,
+            networkMode: .networkMode,
+            containerDefinitions: [.containerDefinitions[0] | .image = $IMAGE],
+            requiresCompatibilities: .requiresCompatibilities,
+            cpu: .cpu,
+            memory: .memory
+          }' > new-task-def.json
 
       - name: Register new task definition
         id: register-task
         run: |
           TASK_DEF_ARN=$(aws ecs register-task-definition \
             --cli-input-json file://new-task-def.json \
-            --query 'taskDefinition.taskDefinitionArn' --output text)
+            --region $AWS_REGION \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
           echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
-          echo "New Task Definition: $TASK_DEF_ARN"
+          echo "::set-output name=task_def_arn::$TASK_DEF_ARN"
 
       - name: Trigger CodeDeploy Deployment
         run: |
@@ -66,6 +69,7 @@ jobs:
             --application-name $CODEDEPLOY_APP \
             --deployment-group-name $DEPLOYMENT_GROUP \
             --deployment-config-name CodeDeployDefault.ECSAllAtOnce \
+            --region $AWS_REGION \
             --description "Strapi Blue/Green Deployment" \
             --target-objects "taskDefinition=${{ env.TASK_DEF_ARN }}" \
             --file-exists-behavior OVERWRITE
