@@ -1,4 +1,4 @@
-name: CD Workflow for ECS Deployment
+name: CD - Deploy to ECS with CodeDeploy
 
 on:
   workflow_dispatch:
@@ -8,46 +8,30 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout the repository
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
-      # Set up AWS CLI
-      - name: Set up AWS CLI
-        uses: aws-actions/configure-aws-credentials@v1
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      # Build Docker image and push to ECR
-      - name: Build and push Docker image
+      - name: Create deployment using CodeDeploy
         run: |
-          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
-          docker build -t strapi-app .
-          docker tag strapi-app:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/strapi-app:latest
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/strapi-app:latest
+          aws deploy create-deployment \
+            --application-name strapi-application \
+            --deployment-group-name strapi-deployment-group \
+            --revision file://deploy-revision.json \
+            --region us-east-1
 
-      # Register ECS task definition
-      - name: Register ECS task definition
+      - name: Generate deploy-revision.json
         run: |
-          TASK_DEF_ARN=$(aws ecs register-task-definition \
-            --family strapi-task \
-            --execution-role-arn arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/ecsTaskExecutionRole \
-            --network-mode awsvpc \
-            --requires-compatibilities FARGATE \
-            --cpu "512" \
-            --memory "1024" \
-            --container-definitions "[{\"name\":\"strapi\",\"image\":\"${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/strapi-app:latest\",\"essential\":true,\"portMappings\":[{\"containerPort\":1337,\"hostPort\":1337,\"protocol\":\"tcp\"}]}]" \
-            --region us-east-1)
-
-            - name: Create deployment using CodeDeploy
-            run: |
-              aws deploy create-deployment \
-                --application-name strapi-application \
-                --deployment-group-name strapi-deployment-group \
-                --revision '{"revisionType":"GitHub","gitHubLocation":{"repository":"DDhanavandhan/strapi_ecs_deploy","commitId":"${{ github.sha }}"}}' \
-                --region us-east-1
-          
-
-          echo "Deployment ID: $DEPLOYMENT_ID"
+          echo '{
+            "revisionType": "GitHub",
+            "gitHubLocation": {
+              "repository": "DDhanavandhan/strapi_ecs_deploy",
+              "commitId": "${{ github.sha }}"
+            }
+          }' > deploy-revision.json
