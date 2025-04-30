@@ -6,10 +6,17 @@ on:
       ecr_image:
         description: 'ECR Image URI (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/strapi-app:sha-123)'
         required: true
+      action:
+        description: 'Select action'
+        type: choice
+        options:
+          - create-infra
+          - deploy-app
+        required: true
 
 jobs:
-  deploy:
-    name: Deploy to ECS using Terraform
+  terraform-infra:
+    if: github.event.inputs.action == 'create-infra'
     runs-on: ubuntu-latest
     
     
@@ -28,13 +35,24 @@ jobs:
         uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Init
-        run: terraform init 
-        working-directory: ./terraform
+        run: terraform init
 
       - name: Terraform Apply
         run: terraform apply -auto-approve -var="ecr_image=${{ github.event.inputs.ecr_image }}"
-        working-directory: ./terraform
-        
+
+  trigger-deployment:
+    if: github.event.inputs.action == 'deploy-app'
+    runs-on: ubuntu-latest
+    
+    
+    steps:
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
       - name: Get ECS Task Definition ARN
         id: get_task_def
         run: |
@@ -46,10 +64,10 @@ jobs:
               --output text)
             echo "taskDefinitionArn=$TASK_ARN" >> "$GITHUB_OUTPUT"
         
-      - name: Trigger CodeDeploy Deployment
-        run: |
-            aws deploy create-deployment \
-              --application-name strapi-codedeploy-app \
-              --deployment-group-name strapi-deploy-group \
-              --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-              --revision "revisionType=AppSpecContent,appSpecContent={\"version\":\"1.0\",\"Resources\":[{\"TargetService\":{\"Type\":\"AWS::ECS::Service\",\"Properties\":{\"TaskDefinition\":\"${{ steps.get_task_def.outputs.taskDefinitionArn }}\",\"LoadBalancerInfo\":{\"ContainerName\":\"strapi\",\"ContainerPort\":1337}}}}]}"
+            - name: Trigger CodeDeploy Deployment
+            run: |
+              aws deploy create-deployment \
+                --application-name strapi-codedeploy-app \
+                --deployment-group-name strapi-deploy-group \
+                --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
+                --revision 'revisionType=AppSpecContent,appSpecContent='\''{"version":"1.0","Resources":[{"TargetService":{"Type":"AWS::ECS::Service","Properties":{"TaskDefinition":"'"${{ steps.get_task_def.outputs.taskDefinitionArn }}"'","LoadBalancerInfo":{"ContainerName":"strapi","ContainerPort":1337}}}}]}'\'
