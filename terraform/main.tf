@@ -158,8 +158,8 @@ resource "aws_iam_role" "ecs_task_execution_role" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
-      Action    = "sts:AssumeRole",
-      Effect    = "Allow",
+      Action = "sts:AssumeRole",
+      Effect = "Allow",
       Principal = {
         Service = "ecs-tasks.amazonaws.com"
       }
@@ -190,8 +190,8 @@ resource "aws_iam_role" "codedeploy_role" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
-      Action    = "sts:AssumeRole",
-      Effect    = "Allow",
+      Action = "sts:AssumeRole",
+      Effect = "Allow",
       Principal = {
         Service = "codedeploy.amazonaws.com"
       }
@@ -210,8 +210,14 @@ resource "aws_codedeploy_deployment_group" "strapi" {
   app_name               = aws_codedeploy_app.strapi.name
   deployment_group_name  = "strapi-deploy-group"
   service_role_arn       = aws_iam_role.codedeploy_role.arn
-
-  deployment_config_name = "CodeDeployDefault.ECSCanary10Percent5Minutes"
+  
+  # Use the correct ECS deployment configuration
+  deployment_config_name = "CodeDeployDefault.ECSAllAtOnce"  # Can also use ECSCanary10Percent5Minutes
+  
+  deployment_style {
+    deployment_type   = "BLUE_GREEN"
+    deployment_option = "WITH_TRAFFIC_CONTROL"
+  }
 
   auto_rollback_configuration {
     enabled = true
@@ -220,7 +226,8 @@ resource "aws_codedeploy_deployment_group" "strapi" {
 
   blue_green_deployment_config {
     deployment_ready_option {
-      action_on_timeout = "CONTINUE_DEPLOYMENT"
+      action_on_timeout    = "CONTINUE_DEPLOYMENT"
+      wait_time_in_minutes = 0
     }
 
     terminate_blue_instances_on_deployment_success {
@@ -297,7 +304,7 @@ resource "aws_ecs_service" "strapi_service" {
 
   # Add this load balancer configuration
   load_balancer {
-    target_group_arn = aws_lb_target_group.blue_tg.arn  # Initial target group
+    target_group_arn = aws_lb_target_group.blue_tg.arn # Initial target group
     container_name   = "strapi"
     container_port   = 1337
   }
@@ -315,7 +322,7 @@ resource "aws_ecs_service" "strapi_service" {
 
   lifecycle {
     ignore_changes = [
-      task_definition,  # CodeDeploy will manage this
+      task_definition, # CodeDeploy will manage this
       load_balancer    # CodeDeploy will handle traffic shifting
     ]
   }
@@ -361,7 +368,7 @@ resource "aws_cloudwatch_metric_alarm" "ecs_network_in" {
   namespace           = "AWS/ECS"
   period              = 300
   statistic           = "Average"
-  threshold           = 100000000  # 100MB
+  threshold           = 100000000 # 100MB
   alarm_description   = "High incoming traffic"
   dimensions = {
     ClusterName = aws_ecs_cluster.strapi_cluster.name
@@ -377,7 +384,7 @@ resource "aws_cloudwatch_metric_alarm" "ecs_network_out" {
   namespace           = "AWS/ECS"
   period              = 300
   statistic           = "Average"
-  threshold           = 100000000  # 100MB
+  threshold           = 100000000 # 100MB
   alarm_description   = "High outgoing traffic"
   dimensions = {
     ClusterName = aws_ecs_cluster.strapi_cluster.name
@@ -400,6 +407,4 @@ resource "aws_cloudwatch_metric_alarm" "ecs_task_count" {
     ServiceName = aws_ecs_service.strapi_service.name
   }
 }
-
-
 

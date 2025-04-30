@@ -5,7 +5,7 @@ variable "aws_region" {
 variable "ecr_image" {
   description = "The full ECR image URI including tag to deploy"
   type        = string
-  
+
 }
 
 variable "app_port" {
