@@ -291,9 +291,15 @@ resource "aws_ecs_service" "strapi_service" {
   task_definition = aws_ecs_task_definition.strapi_task.arn
   desired_count   = 1
 
-  # Critical change for Blue/Green
   deployment_controller {
-    type = "CODE_DEPLOY"  # This enables Blue/Green deployments
+    type = "CODE_DEPLOY"
+  }
+
+  # Add this load balancer configuration
+  load_balancer {
+    target_group_arn = aws_lb_target_group.blue_tg.arn  # Initial target group
+    container_name   = "strapi"
+    container_port   = 1337
   }
 
   capacity_provider_strategy {
@@ -307,16 +313,13 @@ resource "aws_ecs_service" "strapi_service" {
     assign_public_ip = true
   }
 
-  # Remove any load_balancer blocks - CodeDeploy will manage this
-
   lifecycle {
     ignore_changes = [
       task_definition,  # CodeDeploy will manage this
-      load_balancer     # CodeDeploy will handle traffic shifting
+      load_balancer    # CodeDeploy will handle traffic shifting
     ]
   }
 }
-
 # CloudWatch Alarms
 resource "aws_cloudwatch_metric_alarm" "cpu_utilization" {
   alarm_name          = "High-CPU-Utilization"
