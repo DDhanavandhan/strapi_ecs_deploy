@@ -73,8 +73,9 @@ resource "aws_lb" "alb" {
 }
 
 # Target Group for ECS service (port 1337)
-resource "aws_lb_target_group" "strapi_tg" {
-  name        = "strapi-tg"
+# Change your existing target group to explicitly be "blue"
+resource "aws_lb_target_group" "blue_tg" {
+  name        = "strapi-blue-tg"
   port        = 1337
   protocol    = "HTTP"
   vpc_id      = data.aws_vpc.default.id
@@ -90,30 +91,61 @@ resource "aws_lb_target_group" "strapi_tg" {
     unhealthy_threshold = 2
   }
 }
+resource "aws_lb_target_group" "green_tg" {
+  name        = "strapi-green-tg"
+  port        = 1337
+  protocol    = "HTTP"
+  vpc_id      = data.aws_vpc.default.id
+  target_type = "ip"
 
+  health_check {
+    path                = "/"
+    protocol            = "HTTP"
+    matcher             = "200-399"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+
+  # Ensure green TG has different name than blue to avoid conflicts
+  lifecycle {
+    create_before_destroy = true
+  }
+}
 # ALB Listeners
-resource "aws_lb_listener" "alb_listener_80" {
+# Primary Listener (Port 80) - Will be managed by CodeDeploy
+resource "aws_lb_listener" "http_80" {
   load_balancer_arn = aws_lb.alb.arn
   port              = 80
   protocol          = "HTTP"
 
+  # Default action points to Blue initially
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.strapi_tg.arn
+    target_group_arn = aws_lb_target_group.blue_tg.arn
+  }
+
+  # Ensures we don't get conflicts during Blue/Green switches
+  lifecycle {
+    ignore_changes = [default_action]
   }
 }
 
-resource "aws_lb_listener" "alb_listener_1337" {
+# Secondary Listener (Port 1337) - Static mapping to current production
+resource "aws_lb_listener" "http_1337" {
   load_balancer_arn = aws_lb.alb.arn
   port              = 1337
   protocol          = "HTTP"
 
+  # Always points to whichever is currently production (initially Blue)
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.strapi_tg.arn
+    target_group_arn = aws_lb_target_group.blue_tg.arn
   }
-}
 
+  # CodeDeploy won't manage this listener, so no lifecycle ignore needed
+}
 # ECS Cluster
 resource "aws_ecs_cluster" "strapi_cluster" {
   name = "strapi-cluster"
@@ -144,6 +176,79 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
 resource "aws_cloudwatch_log_group" "strapi_log_group" {
   name              = "/ecs/strapi"
   retention_in_days = 7
+}
+# CodeDeploy Application
+resource "aws_codedeploy_app" "strapi" {
+  compute_platform = "ECS"
+  name             = "strapi-app-deploy"
+}
+
+# IAM Role for CodeDeploy
+resource "aws_iam_role" "codedeploy_role" {
+  name = "strapi-codedeploy-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Action    = "sts:AssumeRole",
+      Effect    = "Allow",
+      Principal = {
+        Service = "codedeploy.amazonaws.com"
+      }
+    }]
+  })
+}
+
+# Attach the managed policy
+resource "aws_iam_role_policy_attachment" "codedeploy" {
+  role       = aws_iam_role.codedeploy_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS"
+}
+
+# Deployment Group
+resource "aws_codedeploy_deployment_group" "strapi" {
+  app_name               = aws_codedeploy_app.strapi.name
+  deployment_group_name  = "strapi-deploy-group"
+  service_role_arn       = aws_iam_role.codedeploy_role.arn
+
+  deployment_config_name = "CodeDeployDefault.ECSCanary10Percent5Minutes"
+
+  auto_rollback_configuration {
+    enabled = true
+    events  = ["DEPLOYMENT_FAILURE"]
+  }
+
+  blue_green_deployment_config {
+    deployment_ready_option {
+      action_on_timeout = "CONTINUE_DEPLOYMENT"
+    }
+
+    terminate_blue_instances_on_deployment_success {
+      action                           = "TERMINATE"
+      termination_wait_time_in_minutes = 5
+    }
+  }
+
+  ecs_service {
+    cluster_name = aws_ecs_cluster.strapi_cluster.name
+    service_name = aws_ecs_service.strapi_service.name
+  }
+
+  load_balancer_info {
+    target_group_pair_info {
+      prod_traffic_route {
+        listener_arns = [aws_lb_listener.alb_listener_80.arn]
+      }
+
+      target_group {
+        name = aws_lb_target_group.blue_tg.name
+      }
+
+      target_group {
+        name = aws_lb_target_group.green_tg.name
+      }
+    }
+  }
 }
 
 # ECS Task Definition (WITH LOGGING)
@@ -186,6 +291,11 @@ resource "aws_ecs_service" "strapi_service" {
   task_definition = aws_ecs_task_definition.strapi_task.arn
   desired_count   = 1
 
+  # Critical change for Blue/Green
+  deployment_controller {
+    type = "CODE_DEPLOY"  # This enables Blue/Green deployments
+  }
+
   capacity_provider_strategy {
     capacity_provider = "FARGATE_SPOT"
     weight            = 1
@@ -197,16 +307,14 @@ resource "aws_ecs_service" "strapi_service" {
     assign_public_ip = true
   }
 
-  load_balancer {
-    target_group_arn = aws_lb_target_group.strapi_tg.arn
-    container_name   = "strapi"
-    container_port   = 1337
-  }
+  # Remove any load_balancer blocks - CodeDeploy will manage this
 
-  depends_on = [
-    aws_lb_listener.alb_listener_80,
-    aws_lb_listener.alb_listener_1337
-  ]
+  lifecycle {
+    ignore_changes = [
+      task_definition,  # CodeDeploy will manage this
+      load_balancer     # CodeDeploy will handle traffic shifting
+    ]
+  }
 }
 
 # CloudWatch Alarms
