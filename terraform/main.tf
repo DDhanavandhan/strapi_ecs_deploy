@@ -237,7 +237,7 @@ resource "aws_codedeploy_deployment_group" "strapi" {
   load_balancer_info {
     target_group_pair_info {
       prod_traffic_route {
-        listener_arns = [aws_lb_listener.alb_listener_80.arn]
+        listener_arns = [aws_lb_listener.http_80.arn]
       }
 
       target_group {
