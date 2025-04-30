@@ -18,7 +18,7 @@ jobs:
   terraform-infra:
     if: github.event.inputs.action == 'create-infra'
     runs-on: ubuntu-latest
-    
+    environment: production
     
     steps:
       - name: Checkout
@@ -43,7 +43,7 @@ jobs:
   trigger-deployment:
     if: github.event.inputs.action == 'deploy-app'
     runs-on: ubuntu-latest
-    
+    environment: production
     
     steps:
       - name: Configure AWS
@@ -56,37 +56,48 @@ jobs:
       - name: Get ECS Task Definition ARN
         id: get_task_def
         run: |
-            TASK_ARN=$(aws ecs list-task-definitions \
-              --family-prefix strapi-task \
-              --sort DESC \
-              --max-items 1 \
-              --query 'taskDefinitionArns[0]' \
-              --output text)
-            echo "taskDefinitionArn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+          TASK_ARN=$(aws ecs list-task-definitions \
+            --family-prefix strapi-task \
+            --sort DESC \
+            --max-items 1 \
+            --query 'taskDefinitionArns[0]' \
+            --output text)
+          echo "taskDefinitionArn=$TASK_ARN" >> "$GITHUB_OUTPUT"
         
       - name: Trigger CodeDeploy Deployment
         run: |
-          aws deploy create-deployment \
-          --application-name strapi-codedeploy-app \
-          --deployment-group-name strapi-deploy-group \
-          --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
-          --revision '{
-            "revisionType": "AppSpecContent",
-            "appSpecContent": {
-              "content": {
-                "version": "1.0",
-                "Resources": [{
-                  "TargetService": {
-                    "Type": "AWS::ECS::Service",
-                    "Properties": {
-                      "TaskDefinition": "${{ steps.get_task_def.outputs.taskDefinitionArn }}",
-                      "LoadBalancerInfo": {
-                        "ContainerName": "strapi",
-                        "ContainerPort": 1337
-                      }
+          # Convert AppSpec to JSON string
+          APPSPEC_JSON=$(jq -n \
+            --arg taskdef "${{ steps.get_task_def.outputs.taskDefinitionArn }}" \
+            '{
+              version: "1.0",
+              Resources: [{
+                TargetService: {
+                  Type: "AWS::ECS::Service",
+                  Properties: {
+                    TaskDefinition: $taskdef,
+                    LoadBalancerInfo: {
+                      ContainerName: "strapi",
+                      ContainerPort: 1337
                     }
                   }
-                }]
+                }
+              }]
+            }')
+
+          # Create revision JSON
+          REVISION_JSON=$(jq -n \
+            --arg content "$APPSPEC_JSON" \
+            '{
+              revisionType: "AppSpecContent",
+              appSpecContent: {
+                content: $content
               }
-            }
-          }'
+            }')
+
+          # Deploy using AWS CodeDeploy
+          aws deploy create-deployment \
+            --application-name strapi-codedeploy-app \
+            --deployment-group-name strapi-deploy-group \
+            --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
+            --revision "$REVISION_JSON"
