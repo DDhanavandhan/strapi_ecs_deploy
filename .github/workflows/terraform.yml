@@ -36,9 +36,11 @@ jobs:
 
       - name: Terraform Init
         run: terraform init 
+        working-directory: ./terraform
 
       - name: Terraform Apply
         run: terraform apply -auto-approve -var="ecr_image=${{ github.event.inputs.ecr_image }}"
+        working-directory: ./terraform
 
   trigger-deployment:
     if: github.event.inputs.action == 'deploy-app'
