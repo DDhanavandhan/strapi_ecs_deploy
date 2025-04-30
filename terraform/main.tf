@@ -2,6 +2,7 @@ provider "aws" {
   region = "us-east-1"
 }
 
+# Default VPC and subnets
 data "aws_vpc" "default" {
   default = true
 }
@@ -13,9 +14,7 @@ data "aws_subnets" "default" {
   }
 }
 
-# ======================
-# Security Groups
-# ======================
+# Security Group for ECS (allow traffic on 1337)
 resource "aws_security_group" "ecs_sg" {
   name        = "strapi-ecs-sg"
   description = "Allow traffic for ECS containers"
@@ -36,9 +35,10 @@ resource "aws_security_group" "ecs_sg" {
   }
 }
 
+# Security Group for ALB
 resource "aws_security_group" "alb_sg" {
   name        = "strapi-alb-sg"
-  description = "Allow HTTP and HTTPS traffic to ALB"
+  description = "Allow HTTP traffic to ALB"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
@@ -49,8 +49,8 @@ resource "aws_security_group" "alb_sg" {
   }
 
   ingress {
-    from_port   = 443
-    to_port     = 443
+    from_port   = 1337
+    to_port     = 1337
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -63,9 +63,7 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# ======================
-# ALB
-# ======================
+# Application Load Balancer
 resource "aws_lb" "alb" {
   name               = "strapi-alb"
   internal           = false
@@ -74,7 +72,7 @@ resource "aws_lb" "alb" {
   subnets            = data.aws_subnets.default.ids
 }
 
-# Target Group
+# Target Group for ECS service (port 1337)
 resource "aws_lb_target_group" "strapi_tg" {
   name        = "strapi-tg"
   port        = 1337
@@ -93,30 +91,11 @@ resource "aws_lb_target_group" "strapi_tg" {
   }
 }
 
-# HTTP Listener → Redirect to HTTPS
+# ALB Listeners
 resource "aws_lb_listener" "alb_listener_80" {
   load_balancer_arn = aws_lb.alb.arn
   port              = 80
   protocol          = "HTTP"
-
-  default_action {
-    type = "redirect"
-
-    redirect {
-      port        = "443"
-      protocol    = "HTTPS"
-      status_code = "HTTP_301"
-    }
-  }
-}
-
-# HTTPS Listener → Forward to Target Group
-resource "aws_lb_listener" "alb_listener_443" {
-  load_balancer_arn = aws_lb.alb.arn
-  port              = 443
-  protocol          = "HTTPS"
-  ssl_policy        = "ELBSecurityPolicy-2016-08"
-  certificate_arn   = aws_acm_certificate_validation.strapi_cert_validation.certificate_arn
 
   default_action {
     type             = "forward"
@@ -124,67 +103,31 @@ resource "aws_lb_listener" "alb_listener_443" {
   }
 }
 
-# ======================
-# SSL Certificate (ACM)
-# ======================
-resource "aws_acm_certificate" "strapi_cert" {
-  domain_name       = var.domain_name
-  validation_method = "DNS"
-  lifecycle {
-    create_before_destroy = true
+resource "aws_lb_listener" "alb_listener_1337" {
+  load_balancer_arn = aws_lb.alb.arn
+  port              = 1337
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.strapi_tg.arn
   }
 }
 
-data "aws_route53_zone" "selected" {
-  name         = var.domain_name
-  private_zone = false
-}
-
-resource "aws_route53_record" "cert_validation" {
-  for_each = {
-    for dvo in aws_acm_certificate.strapi_cert.domain_validation_options : dvo.domain_name => {
-      name   = dvo.resource_record_name
-      type   = dvo.resource_record_type
-      record = dvo.resource_record_value
-    }
-  }
-
-  name    = each.value.name
-  type    = each.value.type
-  zone_id = data.aws_route53_zone.selected.zone_id
-  records = [each.value.record]
-  ttl     = 300
-}
-
-resource "aws_acm_certificate_validation" "strapi_cert_validation" {
-  certificate_arn         = aws_acm_certificate.strapi_cert.arn
-  validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
-}
-
-# ======================
-# ECS Cluster and Fargate Spot
-# ======================
+# ECS Cluster
 resource "aws_ecs_cluster" "strapi_cluster" {
   name = "strapi-cluster"
 }
 
-resource "aws_ecs_cluster_capacity_providers" "capacity" {
-  cluster_name = aws_ecs_cluster.strapi_cluster.name
-
-  capacity_providers = ["FARGATE", "FARGATE_SPOT"]
-}
-
-# ======================
-# IAM Role
-# ======================
+# IAM Role for ECS Task Execution
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "ecsTaskExecutionRole"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
-      Action = "sts:AssumeRole",
-      Effect = "Allow",
+      Action    = "sts:AssumeRole",
+      Effect    = "Allow",
       Principal = {
         Service = "ecs-tasks.amazonaws.com"
       }
@@ -197,17 +140,13 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# ======================
 # CloudWatch Log Group
-# ======================
 resource "aws_cloudwatch_log_group" "strapi_log_group" {
   name              = "/ecs/strapi"
   retention_in_days = 7
 }
 
-# ======================
-# ECS Task Definition (with Logging)
-# ======================
+# ECS Task Definition (WITH LOGGING)
 resource "aws_ecs_task_definition" "strapi_task" {
   family                   = "strapi-task"
   network_mode             = "awsvpc"
@@ -229,9 +168,9 @@ resource "aws_ecs_task_definition" "strapi_task" {
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          awslogs-group         = aws_cloudwatch_log_group.strapi_log_group.name
-          awslogs-region        = "us-east-1"
-          awslogs-stream-prefix = "ecs/strapi"
+          "awslogs-group"         = aws_cloudwatch_log_group.strapi_log_group.name
+          "awslogs-region"        = "us-east-1"
+          "awslogs-stream-prefix" = "ecs/strapi"
         }
       }
     }
@@ -240,15 +179,12 @@ resource "aws_ecs_task_definition" "strapi_task" {
   depends_on = [aws_cloudwatch_log_group.strapi_log_group]
 }
 
-# ======================
-# ECS Service (with Capacity Provider Strategy)
-# ======================
+# ECS Service (using FARGATE SPOT!)
 resource "aws_ecs_service" "strapi_service" {
   name            = "strapi-service"
   cluster         = aws_ecs_cluster.strapi_cluster.id
   task_definition = aws_ecs_task_definition.strapi_task.arn
   desired_count   = 1
-  launch_type     = null
 
   capacity_provider_strategy {
     capacity_provider = "FARGATE_SPOT"
@@ -269,13 +205,11 @@ resource "aws_ecs_service" "strapi_service" {
 
   depends_on = [
     aws_lb_listener.alb_listener_80,
-    aws_lb_listener.alb_listener_443
+    aws_lb_listener.alb_listener_1337
   ]
 }
 
-# ======================
 # CloudWatch Alarms
-# ======================
 resource "aws_cloudwatch_metric_alarm" "cpu_utilization" {
   alarm_name          = "High-CPU-Utilization"
   comparison_operator = "GreaterThanThreshold"
@@ -316,7 +250,7 @@ resource "aws_cloudwatch_metric_alarm" "ecs_network_in" {
   namespace           = "AWS/ECS"
   period              = 300
   statistic           = "Average"
-  threshold           = 100000000 # 100MB
+  threshold           = 100000000  # 100MB
   alarm_description   = "High incoming traffic"
   dimensions = {
     ClusterName = aws_ecs_cluster.strapi_cluster.name
@@ -332,7 +266,7 @@ resource "aws_cloudwatch_metric_alarm" "ecs_network_out" {
   namespace           = "AWS/ECS"
   period              = 300
   statistic           = "Average"
-  threshold           = 100000000 # 100MB
+  threshold           = 100000000  # 100MB
   alarm_description   = "High outgoing traffic"
   dimensions = {
     ClusterName = aws_ecs_cluster.strapi_cluster.name
@@ -355,3 +289,6 @@ resource "aws_cloudwatch_metric_alarm" "ecs_task_count" {
     ServiceName = aws_ecs_service.strapi_service.name
   }
 }
+
+
+

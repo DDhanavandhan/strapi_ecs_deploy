@@ -1,41 +1,81 @@
-name: CD - Deploy Strapi to ECS
+name: CD - Infrastructure and Deployment
 
 on:
   workflow_dispatch:
     inputs:
       ecr_image:
-        description: 'Full ECR image URL (e.g., 123456789012.dkr.ecr.us-east-1.amazonaws.com/strapi-app:latest)'
+        description: 'ECR Image URI (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/strapi-app:sha-123)'
+        required: true
+      action:
+        description: 'Select action'
+        type: choice
+        options:
+          - create-infra
+          - deploy-app
         required: true
 
-env:
-  AWS_REGION: us-east-1
-
 jobs:
-  deploy:
-    name: Deploy to ECS using Terraform
+  terraform-infra:
+    if: github.event.inputs.action == 'create-infra'
     runs-on: ubuntu-latest
-
+    
+    
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v3
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
 
-    - name: Set up Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.5.7
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
 
-    - name: Terraform Init
-      run: terraform init
-      working-directory: ./terraform  # Change if needed
+      - name: Terraform Init
+        run: terraform init
 
-    - name: Terraform Apply
-      run: |
-        terraform apply -auto-approve -var="ecr_image=${{ github.event.inputs.ecr_image }}"
-      working-directory: ./terraform  # Change if needed
+      - name: Terraform Apply
+        run: terraform apply -auto-approve -var="ecr_image=${{ github.event.inputs.ecr_image }}"
+
+  trigger-deployment:
+    if: github.event.inputs.action == 'deploy-app'
+    runs-on: ubuntu-latest
+    needs: terraform-infra
+    
+    steps:
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Get current task definition
+        id: get-taskdef
+        run: |
+          TASK_DEF=$(aws ecs describe-task-definition --task-definition strapi-task)
+          echo "$TASK_DEF" > taskdef.json
+          echo "TASK_DEF_JSON=$(jq -c .taskDefinition taskdef.json)" >> $GITHUB_ENV
+
+      - name: Update task definition with new image
+        id: update-taskdef
+        run: |
+          echo "$TASK_DEF_JSON" > current-taskdef.json
+          jq --arg IMAGE_URI "${{ github.event.inputs.ecr_image }}" '.containerDefinitions[0].image = $IMAGE_URI' current-taskdef.json > updated-taskdef.json
+          NEW_TASK_ARN=$(aws ecs register-task-definition --cli-input-json file://updated-taskdef.json --query taskDefinition.taskDefinitionArn --output text)
+          echo "NEW_TASK_ARN=$NEW_TASK_ARN" >> $GITHUB_ENV
+
+      - name: Trigger CodeDeploy Deployment
+        run: |
+          aws deploy create-deployment \
+            --application-name strapi-app-deploy \
+            --deployment-group-name strapi-deployment-group \
+            --revision '{
+              "revisionType": "AppSpecContent",
+              "appSpecContent": {
+                "content": "{\"version\":1,\"Resources\":[{\"TargetService\":{\"Type\":\"AWS::ECS::Service\",\"Properties\":{\"TaskDefinition\":\"$NEW_TASK_ARN\",\"LoadBalancerInfo\":{\"ContainerName\":\"strapi\",\"ContainerPort\":1337}}}}]"
+              }
+            }'
