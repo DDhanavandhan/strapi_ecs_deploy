@@ -97,7 +97,7 @@ jobs:
 
           # Deploy using AWS CodeDeploy
           aws deploy create-deployment \
-            --application-name strapi-codedeploy-app \
+            --application-name strapi-app-deploy \
             --deployment-group-name strapi-deploy-group \
             --deployment-config-name CodeDeployDefault.ECSCanary10Percent5Minutes \
             --revision "$REVISION_JSON"
